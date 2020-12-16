@@ -86,7 +86,7 @@ def register():
     new_user = User(user_name, email_address, image_file, passcode)
     db.session.add(new_user)
     db.session.commit()
-    db.session.close()
+    # db.session.close()
 
     return Response(status=200)
 
