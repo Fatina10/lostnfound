@@ -7,7 +7,7 @@ from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
 
-#######CONFIGURING DATABASES######
+####### CONFIGURING DATABASES #######
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://test1:Testing123!@#@localhost/trying'
@@ -17,7 +17,7 @@ ma = Marshmallow(app)
 pagination = Pagination(app, db)
 
 
-######MODELS##########
+####### MODELS ##########
 
 class User(db.Model):
     __tablename__ = 'users'
@@ -57,7 +57,7 @@ class Item(db.Model):
         }
 
 
-###MODELS SCHEMA######
+##### MODELS SCHEMA ######
 class userSchema(ma.Schema):
     class Meta:
         fields = ("username", "password")
@@ -75,7 +75,7 @@ users_schema12 = userSchema(many=True)
 items_schema12 = itemsSchema(many=True)
 
 
-##########ROUTES##########
+########## ROUTES ##########
 
 @app.route('/Registration', methods=['POST'])
 def register():
@@ -88,7 +88,7 @@ def register():
     db.session.commit()
     db.session.close()
 
-    return Response(status=202)
+    return Response(status=200)
 
 
 @app.route('/Login', methods=['POST'])
@@ -102,22 +102,18 @@ def login():
         else:
             return Response(status=401)
     else:
-        return Response(status=401)
+        return Response(status=404)
 
 
 @app.route('/addItems', methods=["POST"])
 def add_item():
-    try:
-        new_item = request.json['name']
-        item_description = request.json['description']
-        user_identity = request.json['user_id']
-        new_item = Item(new_item, item_description, user_identity)
-        db.session.add(new_item)
-        db.session.commit()
-        return jsonify("New item added")
-
-    except:
-        return "This id does not exist"
+    new_item = request.json['name']
+    item_description = request.json['description']
+    user_identity = request.json['user_id']
+    new_item = Item(new_item, item_description, user_identity)
+    db.session.add(new_item)
+    db.session.commit()
+    return jsonify("New item added")
 
 
 @app.route('/remove_items/<id>', methods=['DELETE'])
@@ -126,7 +122,7 @@ def remove_item(id):
     if item:
         db.session.delete(item)
         db.session.commit()
-        return items_schema.jsonify(item)
+        return Response(status=200)
     else:
         return Response(status=404)
 
@@ -147,7 +143,8 @@ def search():
         base_query = db.session.query(Item).filter_by(name=name)
 
     elif description:
-        base_query = db.session.query(Item).filter_by(description=description)
+        description = "%{}%".format(description)
+        base_query = db.session.query(Item).filter_by(description.like(description)).all()
 
     else:
         base_query = db.session.query(Item).order_by(Item.id)
@@ -169,7 +166,7 @@ def search():
     return jsonify(items_json)
 
 
-#########RUN APP################
+######### RUN APP ################
 
 if __name__ == '__main__':
     app.run(debug=True)
