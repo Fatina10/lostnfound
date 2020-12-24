@@ -1,3 +1,5 @@
+import json
+
 from flask import Flask, jsonify, request, Response
 from flask_marshmallow import Marshmallow
 from flask_rest_paginate import Pagination
@@ -43,7 +45,8 @@ class Item(db.Model):
     description = db.Column(db.String(300), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
-    def __init__(self, name, description, user_id):
+    def __init__(self, id, name, description, user_id):
+        self.id = id
         self.name = name
         self.description = description
         self.user_id = user_id
@@ -65,7 +68,7 @@ class userSchema(ma.Schema):
 
 class itemsSchema(ma.Schema):
     class Meta:
-        fields = ("name", "description", "user_id")
+        fields = ("id", "name", "description", "user_id")
 
 
 users_schema = userSchema()
@@ -83,12 +86,14 @@ def register():
     email_address = request.json['email']
     image_file = request.json['image_file']
     passcode = request.json['password']
-    new_user = User(user_name, email_address, image_file, passcode)
-    db.session.add(new_user)
-    db.session.commit()
-    # db.session.close()
-
-    return Response(status=200)
+    existing_user = User.query.filter_by(username=user_name).first()
+    if existing_user:
+        return jsonify(message="user already exists!"), 409
+    else:
+        new_user = User(user_name, email_address, image_file, passcode)
+        db.session.add(new_user)
+        db.session.commit()
+        return Response(status=200)
 
 
 @app.route('/Login', methods=['POST'])
@@ -129,44 +134,48 @@ def remove_item(id):
 
 @app.route('/search', methods=['GET'])
 def search():
-    id = request.args.get('id')
-    name = request.args.get('name')
-    description = request.args.get('description')
+    item_id = request.json["id"]
+    search_id = "%{}%".format(item_id)
+    name = request.json["name"]
+    search_name = "%{}%".format(name)
+    desc = request.json["description"]
+    search_desc = "%{}%".format(desc)
 
-    posts_per_page = request.args.get('posts_per_page', 5)
-    start = request.args.get('start', 1)
-
-    if id:
-        base_query = db.session.query(Item).filter_by(id=id)
-
+    if item_id:
+        new_result = []
+        results = db.session.query(Item).filter(Item.id.like(search_id)).all()
+        for i in results:
+            new_result.append({
+                "id": i.id,
+                "name": i.name,
+                "description": i.description
+            })
+        return jsonify(new_result)
     elif name:
-        base_query = db.session.query(Item).filter_by(name=name)
-
-    elif description:
-        description = "%{}%".format(description)
-        base_query = db.session.query(Item).filter_by(description.like(description)).all()
-
+        new_result = []
+        results = db.session.query(Item).filter(Item.name.like(search_name)).all()
+        for i in results:
+            new_result.append({
+                "id": i.id,
+                "name": i.name,
+                "description": i.description
+            })
+        return jsonify(new_result)
+    elif desc:
+        new_result = []
+        results = db.session.query(Item).filter(Item.description.like(search_desc)).all()
+        for i in results:
+            new_result.append({
+                "id": i.id,
+                "name": i.name,
+                "description": i.description
+            })
+        return jsonify(new_result)
     else:
-        base_query = db.session.query(Item).order_by(Item.id)
-
-    result = base_query.paginate(int(start), int(posts_per_page), False)
-
-    items_list = list()
-    for item in result.items:
-        items_list.append(item.to_json())
-
-    items_json = {
-        "items": items_list,
-        "next": result.next_num,
-        "previous": result.prev_num,
-        "count_of_pages": result.pages,
-        "per_page": result.per_page,
-        "total": result.total
-    }
-    return jsonify(items_json)
+        return jsonify(message="0 matching results...")
 
 
-######### RUN APP ################
+############## MAIN ################
 
 if __name__ == '__main__':
     app.run(debug=True)
