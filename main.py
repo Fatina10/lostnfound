@@ -45,15 +45,13 @@ class Item(db.Model):
     description = db.Column(db.String(300), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
-    def __init__(self, id, name, description, user_id):
-        self.id = id
+    def __init__(self, name, description, user_id):
         self.name = name
         self.description = description
         self.user_id = user_id
 
     def to_json(self):
         return {
-            "id": self.id,
             "name": self.name,
             "description": self.description,
             "user_id": self.user_id
@@ -173,6 +171,8 @@ def search():
         return jsonify(new_result)
     else:
         return jsonify(message="0 matching results...")
+
+# @app.route('/claim', methods=['POST'])
 
 
 ############## MAIN ################
