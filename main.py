@@ -1,9 +1,7 @@
-import re
 import time
 from flask import Flask, jsonify, request, Response, session, g, abort
 from flask_restful import Api
 from flask_marshmallow import Marshmallow
-from marshmallow.validate import Length
 from flask_rest_paginate import Pagination
 from flask_sqlalchemy import SQLAlchemy
 from flask_script import Manager
@@ -14,20 +12,17 @@ from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from flask_mail import Mail, Message
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import validates
 
 app = Flask(__name__)
 app.secret_key = 'secret'
 
 # CONFIGURING DATABASES
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://test1:Testing123!@#@localhost/trying'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://zubair:@Afzal262000@localhost/trying'
 app.config['DEBUG'] = True
 db = SQLAlchemy(app)
 auth = HTTPBasicAuth()
 api = Api(app)
-
 
 # CONFIGURING FLASK MAIL
 app.config['TESTING'] = False
@@ -58,16 +53,16 @@ class User(db.Model):
     username = db.Column(db.String(20), unique=True, nullable=False, index=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
     image_file = db.Column(db.String(20), nullable=False, default='default.jpg')
-    password = db.Column(db.String(128))
+    password = db.Column(db.String(128), nullable=False)
     items = db.relationship('Item', backref='user', lazy='dynamic')
     questions = db.relationship('Questions', backref='user', lazy='dynamic')
     answers = db.relationship('Answers', backref='user', lazy='dynamic')
 
-    def __init__(self, username, email, image_file):
+    def __init__(self, username, email, image_file, password):
         self.username = username
         self.email = email
         self.image_file = image_file
-
+        self.password = password
 
     def hash_password(self, password):
         self.password = generate_password_hash(password)
@@ -79,47 +74,6 @@ class User(db.Model):
         return jwt.encode(
             {'id': self.id, 'exp': time.time() + expires_in},
             app.config['SECRET_KEY'], algorithm='HS256')
-
-    def set_password(self, password):
-        if not password:
-            return jsonify('Password not provided'), 403
-        if not re.match('\d.*[A-Z]|[A-Z].*\d', password):
-            return jsonify('Password must contain 1 capital letter and 1 number'), 403
-        if len(password) < 8 or len(password) > 50:
-            return jsonify('Password must be between 8 and 120 characters'), 403
-        self.password = generate_password_hash(password)
-
-
-    @staticmethod
-    def verify_auth_token(token):
-        try:
-            data = jwt.decode(token, app.config['SECRET_KEY'],
-                              algorithms=['HS256'])
-        except:
-            return
-        return User.query.get(data['id'])
-
-    @validates('username')
-    def validate_username(self, key, username):
-        if not username:
-            return jsonify('No username provided'), 403
-        if User.query.filter(User.username == username).first():
-            return jsonify('Username is already in use'), 409
-        if len(username) < 5 or len(username) > 20:
-            return jsonify('Username must be between 5 and 20 characters'), 403
-        return username
-
-    @validates('email')
-    def validate_email(self, key, email):
-        if not email:
-            return jsonify('No email provided'), 403
-        if User.query.filter(User.email == email).first():
-            return jsonify('email is already in use'), 409
-        if len(email) < 5 or len(email) > 201:
-            return jsonify('email must be between 5 and 120 characters'), 403
-        if not re.match("[^@]+@[^@]+\.[^@]+", email):
-            return jsonify('Provided email is not an email address'), 403
-        return email
 
 
 class Item(db.Model):
@@ -276,13 +230,9 @@ def ensure_correct_user(f):
 
 @auth.verify_password
 def verify_password(username_or_token, password):
-    # first try to authenticate by token
-    user = User.verify_auth_token(username_or_token)
-    if not user:
-        # try to authenticate with username/password
-        user = User.query.filter_by(username=username_or_token).first()
-        if not user or not user.verify_password(password):
-            return False
+    user = User.query.filter_by(username=username_or_token).first()
+    if not user or not user.verify_password(password):
+        return False
     g.user = user
     return True
 
@@ -345,16 +295,28 @@ def register():
     email_address = request.json.get('email')
     image_file = request.json.get('image_file')
     password = request.json.get('password')
-
-    user = User(username=user_name, email=email_address, image_file=image_file)
-    user.set_password(password)
+    # if user_name is None or email_address is None or image_file is None or password is None:
+    if user_name is None:
+        return jsonify("empty Username is not allowed!"), 400
+    if len(user_name) < 5 or len(user_name) > 20:
+        return jsonify('Username must be between 5 and 20 characters'), 403
+    if email_address is None:
+        return jsonify("empty email address is not allowed!"), 400
+    if len(email_address) < 5 or len(email_address) > 120:
+        return jsonify('email must be between 5 and 120 characters'), 403
+    if image_file is None:
+        return jsonify("empty image_file is not allowed!"), 400
+    if password is None:
+        return jsonify("empty password is not allowed!"), 400
+    user_name_check = User.query.filter_by(username=user_name).first()
+    email_check = User.query.filter_by(email=email_address).first()
+    if user_name_check or email_check is not None:
+        return jsonify("User already exists!"), 409
+    user = User(username=user_name, email=email_address, image_file=image_file, password=password)
+    user.hash_password(password)
     db.session.add(user)
     db.session.commit()
     return jsonify({'username': user.username}), 201
-
-
-    # except AssertionError as exception_message:
-    #     return jsonify(msg='Error: {}. '.format(exception_message)), 400
 
 
 @app.route('/login', methods=['GET'])
@@ -378,8 +340,7 @@ def login():
         return jsonify("User does not exist!"), 404
 
     if not existing_user.verify_password(password):
-        return jsonify( "Wrong Password!"), 401
-
+        return jsonify("Wrong Password!"), 401
     session['user_id'] = existing_user.id
     session['logged_in'] = True
     # app.permanent_session_lifetime = timedelta(minutes=5)
@@ -400,38 +361,38 @@ def add_item():
     return jsonify("New item added"), 201
 
 
-@app.route('/remove_items/<int:id>/<int:user_id>', methods=['DELETE'])
+@app.route('/remove_items/<int:id>', methods=['DELETE'])
 @login_required
-@ensure_correct_user
-def remove_item(id, user_id):
-    item = Item.query.get(id)
-    user_id = db.session.query(Item.user_id).filter_by(id=id).first()
-    user_id = user_id.user_id
-    if item:
-        db.session.delete(item)
-        db.session.commit()
-        return jsonify("Item Deleted ..."), 200
-    else:
-        return jsonify("No Item with this id ..."), 404
-
-
-@app.route('/questions/<int:id>/<int:user_id>', methods=['POST'])
-@login_required
-@ensure_correct_user
-def add_questions(id, user_id):
-    item = Item.query.get(id)
-    user_id = db.session.query(Item.user_id).filter_by(id=id).first()
+def remove_item(id):
     user = session['user_id']
-    print(item)
-    print(user_id)
-    print(user)
+    item_id = Item.query.get(id)
+    item = db.session.query(Item.user_id).filter_by(id=id).first()
+    if item is None:
+        return jsonify("No Item with this id ..."), 404
+    user_id = item.user_id
+    if user_id != user:
+        return jsonify("Not Authorized ..."), 401
+    db.session.delete(item_id)
+    db.session.commit()
+    return jsonify("Item Deleted ..."), 200
+
+
+@app.route('/questions/<int:id>', methods=['POST'])
+@login_required
+def add_questions(id):
+    item_id = Item.query.get(id)
+    item = db.session.query(Item.user_id).filter_by(id=id).first()
+    if item is None:
+        return jsonify("No Item with this id ..."), 404
+    user_id = item.user_id
+    user = session['user_id']
     json_questions = request.json['questions']
     if not json_questions:
         return jsonify("no questions"), 400
-    if user_id[0] != user:
+    if user_id != user:
         return jsonify("Not Authorized..."), 401
     for i in json_questions:
-        db.session.add(Questions(questions=i, item_id=id, user_id=user_id))
+        db.session.add(Questions(questions=i, item_id=item_id.id, user_id=user_id))
     db.session.commit()
     return jsonify("Questions added ... "), 201
 
@@ -456,20 +417,22 @@ def claim_item(id):
 @login_required
 def add_answers(id):
     q = Questions.query.get(id)
-    user = session['user_id']
-    u_id = db.session.query(Questions.user_id).filter_by(id=id).first()
-    user_email = db.session.query(User.email).filter_by(id=u_id).first()
-    print(u_id)
+    session_user = session['user_id']
+    question = db.session.query(Questions.user_id).filter_by(id=id).first()
+    user_id = question.user_id
+    user = db.session.query(User.email).filter_by(id=user_id).first()
+    user_email = user.email
+    print(user_id)
     print(user_email)
     if q:
         json_answers = request.json['answers']
         if not json_answers:
             return jsonify("no answers"), 400
-        if u_id[0] == user:
+        if user_id == session_user:
             return jsonify("Not Authorized..."), 401
-        db.session.add(Answers(answers=json_answers, question_id=id, approval=None, user_id=user))
+        db.session.add(Answers(answers=json_answers, question_id=id, approval=None, user_id=session_user))
         db.session.commit()
-        msg = Message('Answers added', recipients=[user_email[0]])
+        msg = Message('Answers added', recipients=[user_email])
         msg.body = 'This is a test'
         mail.send(msg)
         return jsonify("Answers added ... "), 201
@@ -477,36 +440,42 @@ def add_answers(id):
         return jsonify("Question id does not exist"), 400
 
 
-@app.route('/approval/<int:id>/<int:user_id>', methods=['POST'])
+@app.route('/approval/<int:id>', methods=['POST'])
 @login_required
-@ensure_correct_user
-def approve(id, user_id):
-    ans = Answers.query.get(id)
-    u_id = db.session.query(Answers.user_id).filter_by(id=id).first()
-    user_email = db.session.query(User.email).filter_by(id=u_id).first()
-    q_id = db.session.query(Answers.question_id).filter_by(id=id).first()
-    user_id = db.session.query(Questions.user_id).filter_by(id=q_id[0]).first()
-    user_id = user_id.user_id
-    print(user_id)
-    if ans:
-        approval = request.json['approval']
-        if not approval:
+def approve(id):
+    session_user = session['user_id']
+    answer_id = Answers.query.get(id)
+    answer = db.session.query(Answers.user_id).filter_by(id=id).first()
+    user_id_answer = answer.user_id
+    user = db.session.query(User.email).filter_by(id=user_id_answer).first()
+    user_email = user.email
+    answer = db.session.query(Answers.question_id).filter_by(id=id).first()
+    question_id = answer.question_id
+    question = db.session.query(Questions.user_id).filter_by(id=question_id).first()
+    user_id_question = question.user_id
+    print(user_id_question)
+    if answer_id:
+        if session_user == user_id_question:
+            approval = request.json['approval']
+            if not approval:
+                Answers.query.filter_by(id=id).update(dict(approval=approval))
+                db.session.commit()
+                approval = "Not Approved"
+                msg = Message('Response against your answers', recipients=[user_email])
+                msg.body = 'Your request is ' + approval
+                mail.send(msg)
+                return jsonify("Response has been submitted...")
+
             Answers.query.filter_by(id=id).update(dict(approval=approval))
             db.session.commit()
-            approval = "Not Approved"
-            msg = Message('Response against your answers', recipients=[user_email[0]])
+            print(approval)
+            approval = "Approved"
+            msg = Message('Response against your answers', recipients=[user_email])
             msg.body = 'Your request is ' + approval
             mail.send(msg)
-            return jsonify("Response has been submitted...")
-
-        Answers.query.filter_by(id=id).update(dict(approval=approval))
-        db.session.commit()
-        print(approval)
-        approval = "Approved"
-        msg = Message('Response against your answers', recipients=[user_email[0]])
-        msg.body = 'Your request is ' + approval
-        mail.send(msg)
-        return jsonify("Response has been submitted..."), 200
+            return jsonify("Response has been submitted..."), 200
+        else:
+            return jsonify("Not Authorized..."), 401
 
 
 @app.route('/upload/<id>', methods=['POST'])
@@ -553,4 +522,4 @@ def logout():
 
 # MAIN
 if __name__ == '__main__':
-    app.run()
+    app.run(debug=True)
