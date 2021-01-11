@@ -13,6 +13,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from flask_mail import Mail, Message
 
+
 app = Flask(__name__)
 app.secret_key = 'secret'
 
@@ -52,16 +53,14 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(20), unique=True, nullable=False, index=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    image_file = db.Column(db.String(20), nullable=False, default='default.jpg')
     password = db.Column(db.String(128), nullable=False)
     items = db.relationship('Item', backref='user', lazy='dynamic')
     questions = db.relationship('Questions', backref='user', lazy='dynamic')
     answers = db.relationship('Answers', backref='user', lazy='dynamic')
 
-    def __init__(self, username, email, image_file, password):
+    def __init__(self, username, email, password):
         self.username = username
         self.email = email
-        self.image_file = image_file
         self.password = password
 
     def hash_password(self, password):
@@ -88,12 +87,14 @@ class Item(db.Model):
     images = db.relationship('Img', backref='item', lazy='dynamic')
 
     def __init__(self, name, description, user_id):
+        self.id = Item.id
         self.name = name
         self.description = description
         self.user_id = user_id
 
     def to_json(self):
         return {
+            "item_id": self.id,
             "name": self.name,
             "description": self.description,
             "user_id": self.user_id
@@ -248,54 +249,36 @@ def current_user():
 
 @app.route('/search', methods=['GET'])
 def search():
-    item_id = request.json["id"]
-    search_id = "%{}%".format(item_id)
-    name = request.json["name"]
+    name = request.args.get('name')
     search_name = "%{}%".format(name)
-    desc = request.json["description"]
+    desc = request.args.get('description')
     search_desc = "%{}%".format(desc)
-
-    if item_id:
-        new_result = []
-        results = db.session.query(Item).filter(Item.id.like(search_id)).all()
-        for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
-        return jsonify(new_result)
-    elif name:
+    if name:
         new_result = []
         results = db.session.query(Item).filter(Item.name.like(search_name)).all()
+        if not results:
+            return jsonify("No matching results")
         for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
+            new_result.append(i.to_json())
         return jsonify(new_result)
     elif desc:
         new_result = []
         results = db.session.query(Item).filter(Item.description.like(search_desc)).all()
+        if not results:
+            return jsonify("No matching results")
         for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
+            new_result.append(i.to_json())
         return jsonify(new_result)
     else:
-        return jsonify(message="0 matching results...")
+        return jsonify(message="write name or description to search the item")
 
 
-@app.route('/Registration', methods=['POST'])
+@app.route('/registration', methods=['POST'])
 def register():
     user_name = request.json.get('username')
     email_address = request.json.get('email')
     image_file = request.json.get('image_file')
     password = request.json.get('password')
-    # if user_name is None or email_address is None or image_file is None or password is None:
     if user_name is None:
         return jsonify("empty Username is not allowed!"), 400
     if len(user_name) < 5 or len(user_name) > 20:
@@ -312,15 +295,14 @@ def register():
     email_check = User.query.filter_by(email=email_address).first()
     if user_name_check or email_check is not None:
         return jsonify("User already exists!"), 409
-    user = User(username=user_name, email=email_address, image_file=image_file, password=password)
+    user = User(username=user_name, email=email_address, password=password)
     user.hash_password(password)
     db.session.add(user)
     db.session.commit()
     return jsonify({'username': user.username}), 201
 
 
-@app.route('/login', methods=['GET'])
-@prevent_login_signup
+@app.route('/login', methods=['POST'])
 def login():
     username = request.json.get('username')
     password = request.json.get('password')
@@ -343,7 +325,6 @@ def login():
         return jsonify("Wrong Password!"), 401
     session['user_id'] = existing_user.id
     session['logged_in'] = True
-    # app.permanent_session_lifetime = timedelta(minutes=5)
     return jsonify({"msg": "Login successful"})
 
 
@@ -364,15 +345,15 @@ def add_item():
 @app.route('/remove_items/<int:id>', methods=['DELETE'])
 @login_required
 def remove_item(id):
-    user = session['user_id']
-    item_id = Item.query.get(id)
-    item = db.session.query(Item.user_id).filter_by(id=id).first()
+    session_user = session['user_id']
+    item = Item.query.get(id)
+    user_item = db.session.query(Item.user_id).filter_by(id=id).first()
     if item is None:
         return jsonify("No Item with this id ..."), 404
-    user_id = item.user_id
-    if user_id != user:
+    user_id = user_item.user_id
+    if user_id != session_user:
         return jsonify("Not Authorized ..."), 401
-    db.session.delete(item_id)
+    db.session.delete(item)
     db.session.commit()
     return jsonify("Item Deleted ..."), 200
 
@@ -380,19 +361,19 @@ def remove_item(id):
 @app.route('/questions/<int:id>', methods=['POST'])
 @login_required
 def add_questions(id):
-    item_id = Item.query.get(id)
-    item = db.session.query(Item.user_id).filter_by(id=id).first()
+    session_user = session['user_id']
+    item = Item.query.get(id)
+    user_item = db.session.query(Item.user_id).filter_by(id=id).first()
     if item is None:
         return jsonify("No Item with this id ..."), 404
-    user_id = item.user_id
-    user = session['user_id']
+    user_id = user_item.user_id
     json_questions = request.json['questions']
     if not json_questions:
         return jsonify("no questions"), 400
-    if user_id != user:
+    if user_id != session_user:
         return jsonify("Not Authorized..."), 401
     for i in json_questions:
-        db.session.add(Questions(questions=i, item_id=item_id.id, user_id=user_id))
+        db.session.add(Questions(questions=i, item_id=item.id, user_id=user_id))
     db.session.commit()
     return jsonify("Questions added ... "), 201
 
@@ -400,44 +381,52 @@ def add_questions(id):
 @app.route('/claim/<int:id>', methods=['POST'])
 @login_required
 def claim_item(id):
-    user = session['user_id']
-    i_id = Questions.query.filter_by(item_id=id).all()
-    iu_id = db.session.query(Item.user_id).filter_by(id=id).first()
-    temp = []
-    if not i_id:
+    session_user = session['user_id']
+    item = Item.query.get(id)
+    if item is None:
         return jsonify("Item does not exist"), 404
-    if iu_id[0] == user:
+    question = Questions.query.filter_by(item_id=id).all()
+    print(question)
+    user_item = db.session.query(Item.user_id).filter_by(id=id).first()
+    user_id = user_item.user_id
+    temp = []
+    if user_id == session_user:
         return jsonify("Not Authorized..."), 401
-    for i in range(0, len(i_id)):
-        temp.append(i_id[i].questions)
+    for i in range(0, len(question)):
+        temp.append(question[i].questions)
     return jsonify(temp)
 
 
 @app.route('/add_answers/<int:id>', methods=["POST"])
 @login_required
 def add_answers(id):
-    q = Questions.query.get(id)
     session_user = session['user_id']
-    question = db.session.query(Questions.user_id).filter_by(id=id).first()
-    user_id = question.user_id
+    question = Questions.query.get(id)
+    print(question.id)
+    if question is None:
+        return jsonify("Item does not exist"), 404
+    user_question = db.session.query(Questions).filter_by(id=id).first()
+    i_id = db.session.query(Questions).filter_by(id=question.id).first()
+    item = db.session.query(Item).filter_by(id=i_id.item_id).first()
+    print(item)
+    user_id = user_question.user_id
     user = db.session.query(User.email).filter_by(id=user_id).first()
     user_email = user.email
-    print(user_id)
-    print(user_email)
-    if q:
+    claim_user = User.query.get(session_user)
+    if question:
         json_answers = request.json['answers']
         if not json_answers:
             return jsonify("no answers"), 400
         if user_id == session_user:
             return jsonify("Not Authorized..."), 401
+        print(claim_user.email, json_answers)
         db.session.add(Answers(answers=json_answers, question_id=id, approval=None, user_id=session_user))
         db.session.commit()
         msg = Message('Answers added', recipients=[user_email])
-        msg.body = 'This is a test'
+        msg.body = f"Item '{item.name}' was claimed by user '{claim_user.email}'. Answers provided were: '" \
+                   f"{json_answers}'"
         mail.send(msg)
         return jsonify("Answers added ... "), 201
-    else:
-        return jsonify("Question id does not exist"), 400
 
 
 @app.route('/approval/<int:id>', methods=['POST'])
