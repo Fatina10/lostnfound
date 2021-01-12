@@ -1,4 +1,5 @@
 import time
+import json
 from flask import Flask, jsonify, request, Response, session, g, abort
 from flask_restful import Api
 from flask_marshmallow import Marshmallow
@@ -18,7 +19,7 @@ app.secret_key = 'secret'
 
 # CONFIGURING DATABASES
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://zubair:@Afzal262000@localhost/trying'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://root:admin123@52.117.15.150:5500/lnfdb'
 app.config['DEBUG'] = True
 db = SQLAlchemy(app)
 auth = HTTPBasicAuth()
@@ -55,6 +56,7 @@ class User(db.Model):
     image_file = db.Column(db.String(20), nullable=False, default='default.jpg')
     password = db.Column(db.String(128), nullable=False)
     items = db.relationship('Item', backref='user', lazy='dynamic')
+    item_claims = db.relationship('ItemClaim', backref='user', lazy='dynamic', cascade="all, delete-orphan")
     questions = db.relationship('Questions', backref='user', lazy='dynamic')
     answers = db.relationship('Answers', backref='user', lazy='dynamic')
 
@@ -83,21 +85,45 @@ class Item(db.Model):
     name = db.Column(db.String(120), nullable=False)
     description = db.Column(db.String(300), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    questions_new = db.Column(db.JSON)
     questions = db.relationship(
         'Questions', backref='item', lazy='dynamic', cascade="delete, merge, save-update")
     images = db.relationship('Img', backref='item', lazy='dynamic')
+    item_claims = db.relationship('ItemClaim', backref='item', lazy='dynamic', cascade="all, delete-orphan")
 
-    def __init__(self, name, description, user_id):
+    def __init__(self, name, description, user_id, questions):
         self.name = name
         self.description = description
         self.user_id = user_id
 
+        questions_dict = dict()
+        for index, question in enumerate(questions):
+            questions_dict[index] = question
+
+        self.questions_new = questions_dict
+
     def to_json(self):
         return {
+            "id": self.id,
             "name": self.name,
             "description": self.description,
-            "user_id": self.user_id
+            "user_id": self.user_id,
+            "questions": self.questions_new
         }
+
+
+class ItemClaim(db.Model):
+    __tablename__ = 'item_claims'
+
+    id = db.Column(db.Integer, primary_key=True, nullable=False, autoincrement=True)
+    answers = db.Column(db.JSON)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+
+    def __init__(self, answers, item_id, user_id):
+        self.answers = answers
+        self.item_id = item_id
+        self.user_id = user_id
 
 
 class Questions(db.Model):
@@ -259,31 +285,19 @@ def search():
         new_result = []
         results = db.session.query(Item).filter(Item.id.like(search_id)).all()
         for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
+            new_result.append(i.to_json())
         return jsonify(new_result)
     elif name:
         new_result = []
         results = db.session.query(Item).filter(Item.name.like(search_name)).all()
         for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
+            new_result.append(i.to_json())
         return jsonify(new_result)
     elif desc:
         new_result = []
         results = db.session.query(Item).filter(Item.description.like(search_desc)).all()
         for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
+            new_result.append(i.to_json())
         return jsonify(new_result)
     else:
         return jsonify(message="0 matching results...")
@@ -320,7 +334,7 @@ def register():
 
 
 @app.route('/login', methods=['GET'])
-@prevent_login_signup
+# @prevent_login_signup
 def login():
     username = request.json.get('username')
     password = request.json.get('password')
@@ -352,13 +366,31 @@ def login():
 def add_item():
     new_item = request.json['name']
     item_description = request.json['description']
+
+    questions = request.json.get("questions", [])
+    if questions and not isinstance(questions, list):
+        return Response("'questions' should be a list", status=400)
+
     user_identity = session['user_id']
     if new_item is None or item_description is None or user_identity is None:
         abort(400)
-    new_item = Item(new_item, item_description, user_identity)
+    new_item = Item(new_item, item_description, user_identity, questions)
     db.session.add(new_item)
     db.session.commit()
     return jsonify("New item added"), 201
+
+
+@app.route('/get_item/<int:id>', methods=['GET'])
+@login_required
+def get_item(id):
+    user = session['user_id']
+    item_id = Item.query.get(id)
+    item = db.session.query(Item.user_id).filter_by(id=id).first()
+    if item is None:
+        return jsonify("No Item with this id ..."), 404
+    user_id = item.user_id
+
+    return jsonify(item_id.to_json())
 
 
 @app.route('/remove_items/<int:id>', methods=['DELETE'])
@@ -400,17 +432,70 @@ def add_questions(id):
 @app.route('/claim/<int:id>', methods=['POST'])
 @login_required
 def claim_item(id):
-    user = session['user_id']
-    i_id = Questions.query.filter_by(item_id=id).all()
-    iu_id = db.session.query(Item.user_id).filter_by(id=id).first()
-    temp = []
-    if not i_id:
-        return jsonify("Item does not exist"), 404
-    if iu_id[0] == user:
-        return jsonify("Not Authorized..."), 401
-    for i in range(0, len(i_id)):
-        temp.append(i_id[i].questions)
-    return jsonify(temp)
+    """
+    {
+        answers: {
+            question_index: "answer"
+        }
+    }
+    :param id:
+    :return:
+    """
+    answers = request.json.get("answers")
+    if answers is None:
+        return Response("Key 'answers' missing in request data", status=400)
+
+    # Answers were sent
+
+    if not isinstance(answers, dict):
+        return Response("Value for key 'answers' should be a dictionary", status=400)
+
+    # Answers were sent as a dictionary
+
+    for k, v in answers.items():
+        if not k.isnumeric():
+            return Response("Each key in dictionary 'answers' should be an int", status=400)
+        if not isinstance(v, str):
+            return Response("Each value in dictionary 'answers' should be a string", status=400)
+
+    # Answers were sent in a dictionary with the right format where keys were integers and value were strings
+
+    user_id = session['user_id']
+    item = Item.query.filter_by(id=id).first()
+    if not item:
+        return Response("Item with ID {} not found for the user".format(id), status=404)
+
+    # The item that the user is requesting to claim exists in the database
+
+    if item.user_id == user_id:
+        return Response("You cannot claim an item you posted yourself, greedy person!", status=403)
+
+    # The user claiming the item is not the user who posted the item
+
+    questions = item.questions_new
+    db_question_indices = set(questions.keys())
+    request_question_indices = set(answers.keys())
+
+    if db_question_indices != request_question_indices:
+        return Response("Question indices do not match".format(id), status=404)
+
+    # Indices provided by the client match the indices of the questions for the item
+
+    item_claim = ItemClaim(answers, item.id, user_id)
+    db.session.add(item_claim)
+    db.session.commit()
+
+    answers_summary = ""
+    for k,v in answers.items():
+        answers_summary += f"\nQuestion: {questions[k]}\nAnswer: {v}"
+
+    claim_user = User.query.get(user_id)
+    msg = Message('Answers added', recipients=[item.user.email])
+    msg.body = f"The item '{item.name}' was claimed by user '{claim_user.email}'. The answers provided were: " \
+               f"'{answers_summary}'"
+    mail.send(msg)
+
+    return Response(status=200)
 
 
 @app.route('/add_answers/<int:id>', methods=["POST"])
