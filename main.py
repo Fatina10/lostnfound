@@ -13,7 +13,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from flask_mail import Mail, Message
 
-
 app = Flask(__name__)
 app.secret_key = 'secret'
 
@@ -207,6 +206,7 @@ def login_required(f):
             return f(*args, **kwargs)
         else:
             return jsonify("Login required. No active session"), 403
+
     return wrap
 
 
@@ -216,6 +216,7 @@ def prevent_login_signup(f):
         if session.get('user_id'):
             return jsonify("Please log out first ..."), 400
         return f(*args, **kwargs)
+
     return wrap
 
 
@@ -226,6 +227,7 @@ def ensure_correct_user(f):
         if correct_id != session.get('user_id'):
             return jsonify("Not Authorized"), 401
         return f(*args, **kwargs)
+
     return wrap
 
 
@@ -277,7 +279,6 @@ def search():
 def register():
     user_name = request.json.get('username')
     email_address = request.json.get('email')
-    image_file = request.json.get('image_file')
     password = request.json.get('password')
     if user_name is None:
         return jsonify("empty Username is not allowed!"), 400
@@ -287,8 +288,6 @@ def register():
         return jsonify("empty email address is not allowed!"), 400
     if len(email_address) < 5 or len(email_address) > 120:
         return jsonify('email must be between 5 and 120 characters'), 403
-    if image_file is None:
-        return jsonify("empty image_file is not allowed!"), 400
     if password is None:
         return jsonify("empty password is not allowed!"), 400
     user_name_check = User.query.filter_by(username=user_name).first()
@@ -367,13 +366,22 @@ def add_questions(id):
     if item is None:
         return jsonify("No Item with this id ..."), 404
     user_id = user_item.user_id
-    json_questions = request.json['questions']
-    if not json_questions:
-        return jsonify("no questions"), 400
+    # json_questions = request.json['questions']
+    json_questions = request.json.get("questions", {})
+    if json_questions is None:
+        return jsonify("no questions provided"), 400
+    if json_questions and not isinstance(json_questions, dict):
+        return jsonify("'questions' should be a dictionary"), 400
+    for k, v in json_questions.items():
+        if not k.isnumeric():
+            return Response("Each key in dictionary 'json_questions' should be an int", status=400)
+        if not isinstance(v, str):
+            return Response("Each value in dictionary 'json_questions' should be a string", status=400)
     if user_id != session_user:
         return jsonify("Not Authorized..."), 401
-    for i in json_questions:
-        db.session.add(Questions(questions=i, item_id=item.id, user_id=user_id))
+
+    new_questions = Questions(json_questions, item.id, user_id)
+    db.session.add(new_questions)
     db.session.commit()
     return jsonify("Questions added ... "), 201
 
@@ -385,16 +393,14 @@ def claim_item(id):
     item = Item.query.get(id)
     if item is None:
         return jsonify("Item does not exist"), 404
-    question = Questions.query.filter_by(item_id=id).all()
-    print(question)
+    # question = Questions.query.filter_by(item_id=id).all()
+    question = db.session.query(Questions.questions).filter_by(item_id=id).all()
     user_item = db.session.query(Item.user_id).filter_by(id=id).first()
     user_id = user_item.user_id
-    temp = []
     if user_id == session_user:
         return jsonify("Not Authorized..."), 401
-    for i in range(0, len(question)):
-        temp.append(question[i].questions)
-    return jsonify(temp)
+
+    return jsonify(question)
 
 
 @app.route('/add_answers/<int:id>', methods=["POST"])
@@ -402,10 +408,12 @@ def claim_item(id):
 def add_answers(id):
     session_user = session['user_id']
     question = Questions.query.get(id)
-    print(question.id)
     if question is None:
-        return jsonify("Item does not exist"), 404
+        return jsonify("question does not exist"), 404
     user_question = db.session.query(Questions).filter_by(id=id).first()
+    questions = question.questions
+    temp = {}
+    question_dict = eval(questions)
     i_id = db.session.query(Questions).filter_by(id=question.id).first()
     item = db.session.query(Item).filter_by(id=i_id.item_id).first()
     print(item)
@@ -414,19 +422,38 @@ def add_answers(id):
     user_email = user.email
     claim_user = User.query.get(session_user)
     if question:
-        json_answers = request.json['answers']
-        if not json_answers:
-            return jsonify("no answers"), 400
+        answers = request.json.get("answers", {})
+        if answers is None:
+            return Response("Key 'answers' missing in request data", status=400)
+        if not isinstance(answers, dict):
+            return Response("Value for key 'answers' should be a dictionary", status=400)
+        for k, v in answers.items():
+            if not k.isnumeric():
+                return Response("Each key in dictionary 'answers' should be an int", status=400)
+            if not isinstance(v, str):
+                return Response("Each value in dictionary 'answers' should be a string", status=400)
+        db_question_indices = set(question_dict.keys())
+        answer_val = answers.values()
+        question_val = question_dict.values()
+        request_question_indices = set(answers.keys())
+
+        if db_question_indices != request_question_indices:
+            return Response("Question indices do not match".format(id), status=404)
         if user_id == session_user:
             return jsonify("Not Authorized..."), 401
-        print(claim_user.email, json_answers)
-        db.session.add(Answers(answers=json_answers, question_id=id, approval=None, user_id=session_user))
+        db_answers = Answers(answers=answers, approval=None, question_id=id, user_id=session_user)
+        db.session.add(db_answers)
         db.session.commit()
+        print(question_val)
+        print(answer_val)
+        for k, v in zip(question_val, answer_val):
+            temp[k] = v
+        print(temp)
         msg = Message('Answers added', recipients=[user_email])
-        msg.body = f"Item '{item.name}' was claimed by user '{claim_user.email}'. Answers provided were: '" \
-                   f"{json_answers}'"
+        msg.body = f"The item '{item.name}' was claimed by user '{claim_user.email}'. The answers provided were: " \
+                   f"'{temp}'"
         mail.send(msg)
-        return jsonify("Answers added ... "), 201
+    return jsonify("Answers added ... "), 201
 
 
 @app.route('/approval/<int:id>', methods=['POST'])
@@ -511,4 +538,4 @@ def logout():
 
 # MAIN
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run()
