@@ -1,9 +1,11 @@
-import time
+import json
 from flask import Flask, jsonify, request, Response, session, g, abort
 from flask_restful import Api
 from flask_marshmallow import Marshmallow
+from marshmallow import fields, validate
 from flask_rest_paginate import Pagination
 from flask_sqlalchemy import SQLAlchemy
+from flask_mail import Mail, Message
 from flask_script import Manager
 from flask_httpauth import HTTPBasicAuth
 import jwt
@@ -11,18 +13,16 @@ from flask_migrate import Migrate, MigrateCommand
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
-from flask_mail import Mail, Message
 
 app = Flask(__name__)
 app.secret_key = 'secret'
 
 # CONFIGURING DATABASES
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://zubair:@Afzal262000@localhost/trying'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql://test1:Testing123!@#@localhost/trying'
 app.config['DEBUG'] = True
 db = SQLAlchemy(app)
 auth = HTTPBasicAuth()
-api = Api(app)
 
 # CONFIGURING FLASK MAIL
 app.config['TESTING'] = False
@@ -52,16 +52,13 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(20), unique=True, nullable=False, index=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    image_file = db.Column(db.String(20), nullable=False, default='default.jpg')
     password = db.Column(db.String(128), nullable=False)
     items = db.relationship('Item', backref='user', lazy='dynamic')
-    questions = db.relationship('Questions', backref='user', lazy='dynamic')
-    answers = db.relationship('Answers', backref='user', lazy='dynamic')
+    claims = db.relationship('Claims', backref='user', lazy='dynamic') #cclaims
 
-    def __init__(self, username, email, image_file, password):
+    def __init__(self, username, email, password):
         self.username = username
         self.email = email
-        self.image_file = image_file
         self.password = password
 
     def hash_password(self, password):
@@ -69,11 +66,6 @@ class User(db.Model):
 
     def verify_password(self, password):
         return check_password_hash(self.password, password)
-
-    def generate_auth_token(self, expires_in=600):
-        return jwt.encode(
-            {'id': self.id, 'exp': time.time() + expires_in},
-            app.config['SECRET_KEY'], algorithm='HS256')
 
 
 class Item(db.Model):
@@ -83,441 +75,272 @@ class Item(db.Model):
     name = db.Column(db.String(120), nullable=False)
     description = db.Column(db.String(300), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    questions = db.relationship(
-        'Questions', backref='item', lazy='dynamic', cascade="delete, merge, save-update")
-    images = db.relationship('Img', backref='item', lazy='dynamic')
+    questions = db.Column(db.JSON)
+    claims = db.relationship('Claims', backref='item', lazy='dynamic') #claims
 
-    def __init__(self, name, description, user_id):
+    def __init__(self, name, description, user_id, questions):
         self.name = name
         self.description = description
         self.user_id = user_id
+        self.questions = questions
 
     def to_json(self):
         return {
             "name": self.name,
             "description": self.description,
-            "user_id": self.user_id
-        }
-
-
-class Questions(db.Model):
-    __tablename__ = 'questions'
-
-    id = db.Column(db.Integer, primary_key=True, nullable=False, autoincrement=True)
-    questions = db.Column(db.String(120), nullable=False)
-    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
-    answers = db.relationship('Answers', backref='question', lazy='dynamic', cascade="delete, merge, save-update")
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-
-    def __init__(self, questions, item_id, user_id):
-        self.questions = questions
-        self.item_id = item_id
-        self.user_id = user_id
-
-    def to_json(self):
-        return {
+            "user_id": self.user_id,
             "questions": self.questions,
-            "item_id": self.item_id
         }
 
 
-class Answers(db.Model):
-    __tablename__ = 'answers'
-
+class Claims(db.Model):
     id = db.Column(db.Integer, primary_key=True, nullable=False, autoincrement=True)
-    answers = db.Column(db.String(120), nullable=False)
-    approval = db.Column(db.Boolean)
-    question_id = db.Column(db.Integer, db.ForeignKey('questions.id'), nullable=False)
+    answers = db.Column(db.JSON) #json
+    approval = db.Column(db.Boolean, nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
 
-    def __init__(self, answers, question_id, approval, user_id):
+    def __init__(self, answers, approval, user_id, item_id):
         self.answers = answers
-        self.question_id = question_id
         self.approval = approval
         self.user_id = user_id
-
-    def to_json(self):
-        return {
-            "answers": self.answers,
-            "question_id": self.question_id
-        }
-
-
-class Img(db.Model):
-    __tablename__ = 'images'
-
-    id = db.Column(db.Integer, primary_key=True, nullable=False, autoincrement=True)
-    img = db.Column(db.LargeBinary(length=(2 ** 24) - 1), nullable=False)
-    name = db.Column(db.Text, nullable=False)
-    mimetype = db.Column(db.Text, nullable=False)
-    item_id = db.Column(db.Integer, db.ForeignKey('items.id', ondelete="CASCADE"), nullable=False)
-
-    def __init__(self, img, name, mimetype, item_id):
-        self.img = img
-        self.name = name
-        self.mimetype = mimetype
         self.item_id = item_id
 
 
 # MODELS SCHEMA
-
 class UserSchema(ma.Schema):
+    username = fields.Str(required=True, validate=[validate.Length(min=5, max=20)])
+    email = fields.Email(required=True, validate=[validate.Length(min=15, max=120)])   #jsonschema
+    password = fields.Str(required=True, validate=[validate.Length(min=8, max=120)])
+
     class Meta:
-        fields = ("username", "password")
+        model = User
 
 
 class ItemSchema(ma.Schema):
+    name = fields.Str(required=True, validate=[validate.Length(min=3, max=120)])
+    description = fields.Str(required=True, validate=[validate.Length(min=8, max=300)])
+
     class Meta:
-        fields = ("id", "name", "description", "questions", "user_id")
+        model = Item
 
 
-class QuestionSchema(ma.Schema):
+class ClaimsSchema(ma.Schema):
+    approval = fields.Boolean(required=False)
+
     class Meta:
-        fields = ("questions", "item_id")
+        model = Claims
 
 
-class AnswerSchema(ma.Schema):
-    class Meta:
-        fields = ("answers", "approval", "question_id")
+users_schema = UserSchema(many=True)
+items_schema = ItemSchema(many=True)
+claims_schema = ClaimsSchema(many=True)
 
 
-class ImageSchema(ma.Schema):
-    class Meta:
-        fields = ("id", "img", "name", "mimetype", "item_id")
-
-
-users_schema = UserSchema()
-items_schema = ItemSchema()
-questions_schema = QuestionSchema()
-answers_schema = AnswerSchema()
-images_schema = ImageSchema()
-
-users_schema12 = UserSchema(many=True)
-items_schema12 = ItemSchema(many=True)
-questions_schema12 = QuestionSchema(many=True)
-answers_schema12 = AnswerSchema(many=True)
-images_schema12 = ImageSchema(many=True)
-
-
-def login_required(f):
-    @wraps(f)
-    def wrap(*args, **kwargs):
-        if 'logged_in' in session:
-            return f(*args, **kwargs)
-        else:
-            return jsonify("Login required. No active session"), 403
-    return wrap
-
-
-def prevent_login_signup(f):
-    @wraps(f)
-    def wrap(*args, **kwargs):
-        if session.get('user_id'):
-            return jsonify("Please log out first ..."), 400
-        return f(*args, **kwargs)
-    return wrap
-
-
-def ensure_correct_user(f):
-    @wraps(f)
-    def wrap(*args, **kwargs):
-        correct_id = kwargs.get('user_id')
-        if correct_id != session.get('user_id'):
-            return jsonify("Not Authorized"), 401
-        return f(*args, **kwargs)
-    return wrap
-
-
-@auth.verify_password
-def verify_password(username_or_token, password):
-    user = User.query.filter_by(username=username_or_token).first()
-    if not user or not user.verify_password(password):
-        return False
-    g.user = user
-    return True
-
-
-# ROUTES
-@app.before_request
-def current_user():
-    if session.get('user_id'):
-        g.current_user = User.query.get(session['user_id'])
-    else:
-        g.current_user = None
-
-
-@app.route('/search', methods=['GET'])
-def search():
-    item_id = request.json["id"]
-    search_id = "%{}%".format(item_id)
-    name = request.json["name"]
-    search_name = "%{}%".format(name)
-    desc = request.json["description"]
-    search_desc = "%{}%".format(desc)
-
-    if item_id:
-        new_result = []
-        results = db.session.query(Item).filter(Item.id.like(search_id)).all()
-        for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
-        return jsonify(new_result)
-    elif name:
-        new_result = []
-        results = db.session.query(Item).filter(Item.name.like(search_name)).all()
-        for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
-        return jsonify(new_result)
-    elif desc:
-        new_result = []
-        results = db.session.query(Item).filter(Item.description.like(search_desc)).all()
-        for i in results:
-            new_result.append({
-                "id": i.id,
-                "name": i.name,
-                "description": i.description
-            })
-        return jsonify(new_result)
-    else:
-        return jsonify(message="0 matching results...")
-
-
-@app.route('/Registration', methods=['POST'])
+# Routes
+# API for creating user account
+@app.route('/registration', methods=['POST'])
 def register():
     user_name = request.json.get('username')
     email_address = request.json.get('email')
-    image_file = request.json.get('image_file')
     password = request.json.get('password')
-    # if user_name is None or email_address is None or image_file is None or password is None:
-    if user_name is None:
-        return jsonify("empty Username is not allowed!"), 400
+
+# Ensuring that all the fields are being input by the user according to the schema's requirements
+    if user_name is None or email_address is None or password is None:
+        return jsonify("Missing fields!"), 400
     if len(user_name) < 5 or len(user_name) > 20:
-        return jsonify('Username must be between 5 and 20 characters'), 403
-    if email_address is None:
-        return jsonify("empty email address is not allowed!"), 400
-    if len(email_address) < 5 or len(email_address) > 120:
-        return jsonify('email must be between 5 and 120 characters'), 403
-    if image_file is None:
-        return jsonify("empty image_file is not allowed!"), 400
-    if password is None:
-        return jsonify("empty password is not allowed!"), 400
+        return jsonify("Username must be between 5 and 20 characters!"), 403
+    if len(email_address) < 15 or len(email_address) > 120:
+        return jsonify('email must be between 15 and 120 characters'), 403
+    if len(password) < 8 or len(password) > 120:
+        return jsonify('password must be between 8 and 120 characters'), 403
+
+# Ensuring that the user does not already exist
     user_name_check = User.query.filter_by(username=user_name).first()
     email_check = User.query.filter_by(email=email_address).first()
     if user_name_check or email_check is not None:
         return jsonify("User already exists!"), 409
-    user = User(username=user_name, email=email_address, image_file=image_file, password=password)
+
+# creating the user and saving to database
+    user = User(username=user_name, email=email_address, password=password)
     user.hash_password(password)
     db.session.add(user)
     db.session.commit()
-    return jsonify({'username': user.username}), 201
+    return jsonify({'This user was registered!': user.username}), 201
 
 
-@app.route('/login', methods=['GET'])
-@prevent_login_signup
+# API for user login
+@app.route('/login', methods=['POST'])
 def login():
     username = request.json.get('username')
     password = request.json.get('password')
 
-    if not username and not password:
-        return jsonify("Missing username and password"), 400
+# Ensuring that username and password are both input
+    if username is None or password is None:
+        return jsonify("Please enter both username AND password!"), 400
 
-    if not username:
-        return jsonify("missing username!"), 400
-
-    if not password:
-        return jsonify("missing password!"), 400
-
+# checking if the user even exists
     existing_user = User.query.filter_by(username=username).first()
-
     if not existing_user:
         return jsonify("User does not exist!"), 404
 
+# checking if the password matches
     if not existing_user.verify_password(password):
         return jsonify("Wrong Password!"), 401
     session['user_id'] = existing_user.id
     session['logged_in'] = True
-    # app.permanent_session_lifetime = timedelta(minutes=5)
     return jsonify({"msg": "Login successful"})
 
 
-@app.route('/addItems', methods=["POST"])
-@login_required
+# API for adding items
+@app.route('/add_items', methods=["POST"])
 def add_item():
-    new_item = request.json['name']
+    name = request.json['name']       #login required
     item_description = request.json['description']
     user_identity = session['user_id']
-    if new_item is None or item_description is None or user_identity is None:
-        abort(400)
-    new_item = Item(new_item, item_description, user_identity)
+    json_questions = request.json.get("questions", {})
+
+    for key, val in json_questions.items():
+        if not key.isnumeric():
+            return jsonify("Each key should be an integer"), 400
+        if not isinstance(val, str):
+            return jsonify("Each value should be a string"), 400
+
+    if json_questions and not isinstance(json_questions, dict):
+        print(type(json_questions))
+        return jsonify("Please enter questions in the form of a dictionary!"), 400
+    print(json_questions)
+
+    if name is None or item_description is None or json_questions is None:
+        return jsonify("Please enter name, description AND questions!"), 400
+    if not user_identity:
+        return jsonify("Login required!"), 401
+
+    new_item = Item(name, item_description, user_identity, json_questions)
     db.session.add(new_item)
     db.session.commit()
     return jsonify("New item added"), 201
 
 
-@app.route('/remove_items/<int:id>', methods=['DELETE'])
-@login_required
-def remove_item(id):
+# API for removing items
+@app.route('/remove_items/<int:item_id>', methods=['DELETE'])
+def remove_item(item_id):
     user = session['user_id']
-    item_id = Item.query.get(id)
-    item = db.session.query(Item.user_id).filter_by(id=id).first()
+    item = Item.query.get(id)
     if item is None:
-        return jsonify("No Item with this id ..."), 404
-    user_id = item.user_id
-    if user_id != user:
-        return jsonify("Not Authorized ..."), 401
-    db.session.delete(item_id)
-    db.session.commit()
-    return jsonify("Item Deleted ..."), 200
-
-
-@app.route('/questions/<int:id>', methods=['POST'])
-@login_required
-def add_questions(id):
-    item_id = Item.query.get(id)
-    item = db.session.query(Item.user_id).filter_by(id=id).first()
-    if item is None:
-        return jsonify("No Item with this id ..."), 404
-    user_id = item.user_id
-    user = session['user_id']
-    json_questions = request.json['questions']
-    if not json_questions:
-        return jsonify("no questions"), 400
-    if user_id != user:
-        return jsonify("Not Authorized..."), 401
-    for i in json_questions:
-        db.session.add(Questions(questions=i, item_id=item_id.id, user_id=user_id))
-    db.session.commit()
-    return jsonify("Questions added ... "), 201
-
-
-@app.route('/claim/<int:id>', methods=['POST'])
-@login_required
-def claim_item(id):
-    user = session['user_id']
-    i_id = Questions.query.filter_by(item_id=id).all()
-    iu_id = db.session.query(Item.user_id).filter_by(id=id).first()
-    temp = []
-    if not i_id:
         return jsonify("Item does not exist"), 404
-    if iu_id[0] == user:
-        return jsonify("Not Authorized..."), 401
-    for i in range(0, len(i_id)):
-        temp.append(i_id[i].questions)
-    return jsonify(temp)
-
-
-@app.route('/add_answers/<int:id>', methods=["POST"])
-@login_required
-def add_answers(id):
-    q = Questions.query.get(id)
-    session_user = session['user_id']
-    question = db.session.query(Questions.user_id).filter_by(id=id).first()
-    user_id = question.user_id
-    user = db.session.query(User.email).filter_by(id=user_id).first()
-    user_email = user.email
-    print(user_id)
-    print(user_email)
-    if q:
-        json_answers = request.json['answers']
-        if not json_answers:
-            return jsonify("no answers"), 400
-        if user_id == session_user:
-            return jsonify("Not Authorized..."), 401
-        db.session.add(Answers(answers=json_answers, question_id=id, approval=None, user_id=session_user))
-        db.session.commit()
-        msg = Message('Answers added', recipients=[user_email])
-        msg.body = 'This is a test'
-        mail.send(msg)
-        return jsonify("Answers added ... "), 201
-    else:
-        return jsonify("Question id does not exist"), 400
-
-
-@app.route('/approval/<int:id>', methods=['POST'])
-@login_required
-def approve(id):
-    session_user = session['user_id']
-    answer_id = Answers.query.get(id)
-    answer = db.session.query(Answers.user_id).filter_by(id=id).first()
-    user_id_answer = answer.user_id
-    user = db.session.query(User.email).filter_by(id=user_id_answer).first()
-    user_email = user.email
-    answer = db.session.query(Answers.question_id).filter_by(id=id).first()
-    question_id = answer.question_id
-    question = db.session.query(Questions.user_id).filter_by(id=question_id).first()
-    user_id_question = question.user_id
-    print(user_id_question)
-    if answer_id:
-        if session_user == user_id_question:
-            approval = request.json['approval']
-            if not approval:
-                Answers.query.filter_by(id=id).update(dict(approval=approval))
-                db.session.commit()
-                approval = "Not Approved"
-                msg = Message('Response against your answers', recipients=[user_email])
-                msg.body = 'Your request is ' + approval
-                mail.send(msg)
-                return jsonify("Response has been submitted...")
-
-            Answers.query.filter_by(id=id).update(dict(approval=approval))
-            db.session.commit()
-            print(approval)
-            approval = "Approved"
-            msg = Message('Response against your answers', recipients=[user_email])
-            msg.body = 'Your request is ' + approval
-            mail.send(msg)
-            return jsonify("Response has been submitted..."), 200
-        else:
-            return jsonify("Not Authorized..."), 401
-
-
-@app.route('/upload/<id>', methods=['POST'])
-@login_required
-@ensure_correct_user
-def upload(id):
-    i_id = Item.query.get(id)
-    pic = request.files['pic']
-    print(pic)
-    if not pic:
-        return 'No picture uploaded', 400
-
-    filename = secure_filename(pic.filename)
-    mimetype = pic.mimetype
-    image = Img(img=pic.read(), mimetype=mimetype, name=filename, item_id=i_id.id)
-    print(image, mimetype, filename, i_id.id)
-    db.session.add(image)
+    item_by = db.session.query(Item.user_id).filter_by(id=id).first()
+    if not user:
+        return jsonify("login required"), 401
+    user_id = item_by.user_id
+    if user_id != user:
+        return jsonify("Not Authorized"), 401
+    db.session.delete(item)
     db.session.commit()
-
-    return 'Img has been uploaded!', 200
-
-
-@app.route('/get_img/<int:id>')
-def get_img(id):
-    img = Img.query.filter_by(id=id).first()
-    if not img:
-        return 'No image with this id', 404
-
-    return Response(img.img, mimetype=img.mimetype)
+    return jsonify("Item Deleted!"), 200
 
 
-@app.route('/logout', methods=['DELETE'])
-@login_required
-def logout():
-    """
-    closes 'logged_in' session on call.
-    removes user id from session.
-    :return: logout response
-    """
-    session.pop('logged_in', None)
-    session.pop('user_id', None)
-    return jsonify("logged out. Session closed"), 200
+# API for claiming an item
+@app.route('/claims/<int:item_id>', methods=['POST'])
+def claim_item(item_id):
+    item = Item.query.get(item_id)
+    if item is None:
+        return jsonify("Item does not exist"), 404
+
+    user = session['user_id']
+    user_mail = db.session.query(User.email).filter_by(id=user).first()
+    user_email = user_mail.email
+    item_dude_id = item.user_id
+    item_dude = db.session.query(User.email).filter_by(id=item_dude_id).first()
+    item_questions = db.session.query(Item.questions).filter_by(id=item_id).first()
+    questions = item_questions.questions
+    if item.user_id == user:
+        return jsonify("Not Authorized"), 401
+    msg = Message('You must answer these questions in the asked '
+                  'order to claim this item', recipients=[user_email])
+    msg.body = questions
+    mail.send(msg)
+
+    notification = Message('The item was claimed!', recipients=[item_dude.email])
+    notification.body = f"The item '{item_id}' was claimed  by the user '{user}' " \
+                        f"You will be notified when the user answers the questions for you to approve"
+
+    mail.send(notification)
+    return jsonify("Item was claimed!"), 200
+
+
+# API to add answers
+@app.route('/add_answers/<int:item_id>', methods=["POST"])
+def add_answers(item_id):
+    item = Item.query.get(item_id)
+    if item is None:
+        return jsonify("This item does not exist"), 404
+    session_user = session['user_id']
+    if item.user_id == session_user:
+        return jsonify("Not Authorized"), 401
+    answers = request.json.get("answers")
+    if answers is None:
+        return jsonify("You must answer the questions"), 400
+    if not isinstance(answers, dict):
+        return jsonify("Value for key 'answers' should be a dictionary"), 400
+
+    for key, val in answers.items():
+        if not key.isnumeric():
+            return jsonify("Each key should be an integer"), 400
+        if not isinstance(val, str):
+            return jsonify("Each value should be a string"), 400
+
+    # check to ensure all questions are answered
+    questions = item.questions
+    if len(questions) > len(answers):
+        return jsonify("You must answer all the questions!"),  400  # check status code
+    if len(answers) > len(questions):
+        return jsonify("Oops! The number of answers do not match the number of questions!"), 400
+
+    answers = Claims(answers=answers, approval=None, item_id=item.id, user_id=session_user)
+    db.session.add(answers)
+    db.session.commit()
+    questions = item.questions
+    claim = Claims.query.filter_by(id=item_id).first()
+    answers = claim.answers
+
+    msg = Message('Answers added', recipients=[item.user.email])
+    for n in questions and answers:
+        msg.body = f"The item '{item.name}' was claimed by user '{session_user}'." \
+        f"Question '{n}' => '{questions[n]}' Answer '{n}' => '{answers[n]}'"
+        mail.send(msg)
+
+    user = User.query.filter_by(id=session_user).first()
+    a_user = user.email
+    print(user.email)
+    print(a_user)
+    notification = Message('Your answers were submitted!', recipients=[a_user])
+    notification.body = f"Your answers for the item:  '{item.name}' have been submitted to  " \
+                        f"'{item.user.email}'. Please wait for their response"
+    mail.send(notification)
+
+    return jsonify("Answers submitted!")
+
+
+@app.route('/update_questions/<int:item_id>', methods=["POST"])
+def update_questions(item_id):
+    itm = Item.query.get(item_id)
+    q = db.session.query(Item.questions).filter_by(id=item_id).first()
+    item = db.session.query(Item).filter_by(id=item_id).first()
+    if itm is None:
+        return jsonify("This item does not exist"), 404
+    session_user = session['user_id']
+    if session_user is None:
+        return jsonify("Login required"), 401
+    if itm.user_id != session_user:
+        return jsonify("Not Authorized"), 401
+    qts = q.questions
+    questions = request.json.get("questions")
+    qts.update(questions)
+    updated = Item(name=item.name, description=item.description, user_id=item.user_id, questions=qts)
+    db.session.add(updated)
+    db.session.commit()
+    return jsonify("The questions have been updated!")
 
 
 # MAIN
