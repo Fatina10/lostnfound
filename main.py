@@ -301,19 +301,20 @@ def add_answers(item_id):
     db.session.add(answers)
     db.session.commit()
     questions = item.questions
+    question_val = questions.values()
     claim = Claims.query.filter_by(id=item_id).first()
     answers = claim.answers
-
+    answers_val = answers.values()
+    result = {}
+    for k, v in zip(question_val, answers_val):
+        result[k] = v
     msg = Message('Answers added', recipients=[item.user.email])
-    for n in questions and answers:
-        msg.body = f"The item '{item.name}' was claimed by user '{session_user}'." \
-            f"Question '{n}' => '{questions[n]}' Answer '{n}' => '{answers[n]}'"
-        mail.send(msg)
+    msg.body = f"The item '{item.name}' was claimed by user '{session_user}'." \
+        f"The answers provided were '{result}'"
+    mail.send(msg)
 
     user = User.query.filter_by(id=session_user).first()
     a_user = user.email
-    print(user.email)
-    print(a_user)
     notification = Message('Your answers were submitted!', recipients=[a_user])
     notification.body = f"Your answers for the item:  '{item.name}' have been submitted to  " \
                         f"'{item.user.email}'. Please wait for their response"
@@ -336,11 +337,32 @@ def update_questions(item_id):
         return jsonify("Not Authorized"), 401
     qts = q.questions
     questions = request.json.get("questions")
+    if questions is None:
+        return jsonify("Missing data"), 400
     qts.update(questions)
     updated = Item(name=item.name, description=item.description, user_id=item.user_id, questions=qts)
     db.session.add(updated)
     db.session.commit()
     return jsonify("The questions have been updated!")
+
+
+@app.route('/approval/<int:item_id>', methods=["POST"])
+def approval(item_id):
+
+    approval_status = request.json.get("approval")
+    if not isinstance(approval_status, bool):
+        return jsonify("approval can either be True or False"), 400
+    if approval_status is None:
+        return jsonify("Missing field!"), 400
+    apr = db.session.query(Claims).filter_by(id=item_id).first()
+    session_user = session['user_id']
+    if apr.user_id == session_user:
+        return jsonify("Not authorised"), 401
+    approve = Claims(answers=apr.answers, approval=approval_status, item_id=item_id, user_id=apr.user_id)
+    db.session.add(approve)
+    db.session.commit()
+    # send email to users
+    return jsonify("Your response was submitted!")
 
 
 # MAIN
