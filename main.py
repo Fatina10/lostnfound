@@ -54,7 +54,7 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(128), nullable=False)
     items = db.relationship('Item', backref='user', lazy='dynamic')
-    claims = db.relationship('Claims', backref='user', lazy='dynamic') #cclaims
+    claims = db.relationship('Claims', backref='user', lazy='dynamic')
 
     def __init__(self, username, email, password):
         self.username = username
@@ -76,7 +76,7 @@ class Item(db.Model):
     description = db.Column(db.String(300), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     questions = db.Column(db.JSON)
-    claims = db.relationship('Claims', backref='item', lazy='dynamic') #claims
+    claims = db.relationship('Claims', backref='item', lazy='dynamic')
 
     def __init__(self, name, description, user_id, questions):
         self.name = name
@@ -95,7 +95,7 @@ class Item(db.Model):
 
 class Claims(db.Model):
     id = db.Column(db.Integer, primary_key=True, nullable=False, autoincrement=True)
-    answers = db.Column(db.JSON) #json
+    answers = db.Column(db.JSON)
     approval = db.Column(db.Boolean, nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
@@ -110,7 +110,7 @@ class Claims(db.Model):
 # MODELS SCHEMA
 class UserSchema(ma.Schema):
     username = fields.Str(required=True, validate=[validate.Length(min=5, max=20)])
-    email = fields.Email(required=True, validate=[validate.Length(min=15, max=120)])   #jsonschema
+    email = fields.Email(required=True, validate=[validate.Length(min=15, max=120)])
     password = fields.Str(required=True, validate=[validate.Length(min=8, max=120)])
 
     class Meta:
@@ -307,7 +307,7 @@ def add_answers(item_id):
     msg = Message('Answers added', recipients=[item.user.email])
     for n in questions and answers:
         msg.body = f"The item '{item.name}' was claimed by user '{session_user}'." \
-        f"Question '{n}' => '{questions[n]}' Answer '{n}' => '{answers[n]}'"
+            f"Question '{n}' => '{questions[n]}' Answer '{n}' => '{answers[n]}'"
         mail.send(msg)
 
     user = User.query.filter_by(id=session_user).first()
