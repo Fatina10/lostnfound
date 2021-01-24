@@ -138,30 +138,32 @@ claims_schema = ClaimsSchema(many=True)
 
 
 # Routes
-# API for creating user account
+""" API for creating user account """
+
+
 @app.route('/registration', methods=['POST'])
 def register():
     user_name = request.json.get('username')
     email_address = request.json.get('email')
     password = request.json.get('password')
 
-# Ensuring that all the fields are being input by the user according to the schema's requirements
+    # Ensuring that all the fields are being input by the user according to the schema's requirements
     if user_name is None or email_address is None or password is None:
         return jsonify("Missing fields!"), 400
     if len(user_name) < 5 or len(user_name) > 20:
-        return jsonify("Username must be between 5 and 20 characters!"), 403
+        return jsonify("Username must be between 5 and 20 characters!"), 400
     if len(email_address) < 15 or len(email_address) > 120:
-        return jsonify('email must be between 15 and 120 characters'), 403
+        return jsonify('email must be between 15 and 120 characters'), 400
     if len(password) < 8 or len(password) > 120:
-        return jsonify('password must be between 8 and 120 characters'), 403
+        return jsonify('password must be between 8 and 120 characters'), 400
 
-# Ensuring that the user does not already exist
+    # Ensuring that the user does not already exist
     user_name_check = User.query.filter_by(username=user_name).first()
     email_check = User.query.filter_by(email=email_address).first()
-    if user_name_check or email_check is not None:
+    if user_name_check or email_check:
         return jsonify("User already exists!"), 409
 
-# creating the user and saving to database
+    # creating the user and saving to database
     user = User(username=user_name, email=email_address, password=password)
     user.hash_password(password)
     db.session.add(user)
@@ -169,22 +171,24 @@ def register():
     return jsonify({'This user was registered!': user.username}), 201
 
 
-# API for user login
+""" API for user login """
+
+
 @app.route('/login', methods=['POST'])
 def login():
     username = request.json.get('username')
     password = request.json.get('password')
 
-# Ensuring that username and password are both input
-    if username is None or password is None:
+    # Ensuring that username and password are both input
+    if not (username and password):
         return jsonify("Please enter both username AND password!"), 400
 
-# checking if the user even exists
+    # checking if the user even exists
     existing_user = User.query.filter_by(username=username).first()
     if not existing_user:
         return jsonify("User does not exist!"), 404
 
-# checking if the password matches
+    # checking if the password matches
     if not existing_user.verify_password(password):
         return jsonify("Wrong Password!"), 401
     session['user_id'] = existing_user.id
@@ -192,13 +196,17 @@ def login():
     return jsonify({"msg": "Login successful"})
 
 
-# API for adding items
+"""API for adding items """
+
+
 @app.route('/add_items', methods=["POST"])
 def add_item():
-    name = request.json['name']       #login required
+    name = request.json['name']       # login required
     item_description = request.json['description']
     user_identity = session['user_id']
     json_questions = request.json.get("questions", {})
+    if not user_identity:
+        return jsonify("Login required!"), 401
 
     for key, val in json_questions.items():
         if not key.isnumeric():
@@ -207,14 +215,9 @@ def add_item():
             return jsonify("Each value should be a string"), 400
 
     if json_questions and not isinstance(json_questions, dict):
-        print(type(json_questions))
         return jsonify("Please enter questions in the form of a dictionary!"), 400
-    print(json_questions)
-
     if name is None or item_description is None or json_questions is None:
         return jsonify("Please enter name, description AND questions!"), 400
-    if not user_identity:
-        return jsonify("Login required!"), 401
 
     new_item = Item(name, item_description, user_identity, json_questions)
     db.session.add(new_item)
@@ -222,7 +225,9 @@ def add_item():
     return jsonify("New item added"), 201
 
 
-# API for removing items
+"""" API for removing items """""
+
+
 @app.route('/remove_items/<int:item_id>', methods=['DELETE'])
 def remove_item(item_id):
     user = session['user_id']
@@ -240,7 +245,9 @@ def remove_item(item_id):
     return jsonify("Item Deleted!"), 200
 
 
-# API for claiming an item
+""""" API for claiming an item """""
+
+
 @app.route('/claims/<int:item_id>', methods=['POST'])
 def claim_item(item_id):
     item = Item.query.get(item_id)
@@ -250,9 +257,8 @@ def claim_item(item_id):
     user = session['user_id']
     user_mail = db.session.query(User.email).filter_by(id=user).first()
     user_email = user_mail.email
-    item_dude_id = item.user_id
-    item_dude = db.session.query(User.email).filter_by(id=item_dude_id).first()
-    item_questions = db.session.query(Item.questions).filter_by(id=item_id).first()
+    item_dude = item.user
+    item_questions = item.questions.all()
     questions = item_questions.questions
     if item.user_id == user:
         return jsonify("Not Authorized"), 401
@@ -269,7 +275,9 @@ def claim_item(item_id):
     return jsonify("Item was claimed!"), 200
 
 
-# API to add answers
+"""""  API to add answers """""
+
+
 @app.route('/add_answers/<int:item_id>', methods=["POST"])
 def add_answers(item_id):
     item = Item.query.get(item_id)
