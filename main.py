@@ -201,12 +201,14 @@ def login():
 
 @app.route('/add_items', methods=["POST"])
 def add_item():
-    name = request.json['name']       # login required
+    name = request.json['name']
     item_description = request.json['description']
     user_identity = session['user_id']
     json_questions = request.json.get("questions", {})
     if not user_identity:
         return jsonify("Login required!"), 401
+    if not(name and item_description and json_questions):
+        return jsonify("Please enter name, description AND questions!"), 400
 
     for key, val in json_questions.items():
         if not key.isnumeric():
@@ -216,8 +218,6 @@ def add_item():
 
     if json_questions and not isinstance(json_questions, dict):
         return jsonify("Please enter questions in the form of a dictionary!"), 400
-    if name is None or item_description is None or json_questions is None:
-        return jsonify("Please enter name, description AND questions!"), 400
 
     new_item = Item(name, item_description, user_identity, json_questions)
     db.session.add(new_item)
